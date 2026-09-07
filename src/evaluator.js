@@ -57,8 +57,10 @@ Restricciones Contractuales (Filtros Duros - RECHAZO INMEDIATO si no se cumplen)
 - MODALIDAD (Inviable si es mayor a 1 día de presencialidad): Remoto 100% o Híbrido con máximo 1 día presencial semanal.
 `;
 
+const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
 export async function evaluateJobWithFallback(jobDetails) {
-  let attempts = 0;
+  let attempts = 0; // Controla cuántos modelos del pool hemos quemado en esta oferta
 
   const prompt = `
 Evalúa la siguiente oferta de trabajo frente al perfil de la candidata especificada.
@@ -78,21 +80,38 @@ ${jobDetails.description}
 
   while (attempts < MODEL_POOL.length) {
     const modelName = MODEL_POOL[currentModelIndex];
+    let retries503 = 0;
     
-    try {
-      const model = genAI.getGenerativeModel({ model: modelName, generationConfig });
-      const result = await model.generateContent(prompt);
-      return JSON.parse(result.response.text());
-    } catch (error) {
-      // Si superó cuota (429) o alta demanda (503), rota al siguiente modelo del pool
-      if (error.message?.includes('429') || error.status === 429 || error.message?.includes('503') || error.status === 503) {
-        console.warn(`[WARN] Límite alcanzado en ${modelName} (Error ${error.status || '503/429'}). Rotando al siguiente modelo...`);
-        currentModelIndex = (currentModelIndex + 1) % MODEL_POOL.length;
-        attempts++;
-      } else {
-        // Si es otro error, lo propaga
-        console.error(`[ERROR] Error inesperado con ${modelName}:`, error.message);
-        throw error;
+    while (retries503 <= 2) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName, generationConfig });
+        const result = await model.generateContent(prompt);
+        return JSON.parse(result.response.text());
+      } catch (error) {
+        const is429 = error.message?.includes('429') || error.status === 429;
+        const is503 = error.message?.includes('503') || error.status === 503 || error.message?.includes('500') || error.status === 500;
+
+        if (is429) {
+          console.warn(`[WARN] Cuota agotada (429) en ${modelName}. Rotando al siguiente...`);
+          currentModelIndex = (currentModelIndex + 1) % MODEL_POOL.length;
+          attempts++;
+          break; // Rompe el inner loop para rotar de modelo
+        } else if (is503) {
+          if (retries503 < 2) {
+            retries503++;
+            console.warn(`[WARN] Google saturado (503/500) en ${modelName}. Reintentando en 5s... (Intento ${retries503}/2)`);
+            await sleep(5000);
+          } else {
+            console.warn(`[WARN] Falló el modelo ${modelName} tras 2 reintentos (503 persistente). Rotando al siguiente...`);
+            currentModelIndex = (currentModelIndex + 1) % MODEL_POOL.length;
+            attempts++;
+            break; // Rompe el inner loop para rotar de modelo
+          }
+        } else {
+          // Si es un error 400 (Bad Request), parseo JSON, u otro
+          console.error(`[ERROR] Error inesperado (ej. 400 o JSON inválido) con ${modelName}:`, error.message);
+          return null; // Descarta la oferta y no quema los demás modelos
+        }
       }
     }
   }
