@@ -33,7 +33,7 @@ const generationConfig = {
 };
 
 export const PERFIL_CANDIDATA = `
-Perfil de la Candidata: Florencia Parra
+Perfil de la Candidata: Anónimo
 Rol objetivo: QA Engineer (Semi Senior / Senior) o QA Automation.
 
 Resumen Profesional:
